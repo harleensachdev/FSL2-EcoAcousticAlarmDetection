@@ -1,281 +1,201 @@
-# evaluation.py
 import torch
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import os
-from config import N_WAY, N_SUPPORT, N_QUERY, METADATA_PATH, AUDIO_DIR
-def get_embeddings(model, data_loader, device):
-    """Extract embeddings for all samples in the dataset."""
+from typing import List, Dict, Optional
+from torch.utils.data import DataLoader
+from config import N_WAY, N_SUPPORT, N_QUERY, METADATA_PATH, EPISODES, LEARNING_RATE, PROTO_WEIGHT, RELATION_WEIGHT, LABEL_MAP
+from src.dataset import EpisodicDataLoader
+def evaluate_episodic(model, test_dataset, device, n_way=N_WAY, n_support=N_SUPPORT, n_query=N_QUERY, n_episodes=EPISODES):
+    """
+    Evaluate model using episodic few-shot learning paradigm
+    
+    Args:
+        model: Model with encoder and relation_net components
+        test_dataset: Dataset for testing
+        device: Computation device
+        n_way: Number of classes per episode
+        n_support: Number of support examples per class
+        n_query: Number of query examples per class
+        n_episodes: Number of episodes to evaluate
+        
+    Returns:
+        Accuracy, detailed results with filenames
+    """
+    
+    # Create episodic dataloader for test set
+    episodic_loader = EpisodicDataLoader(
+        dataset=test_dataset,
+        n_way=n_way,
+        n_support=n_support,
+        n_query=n_query,
+        episodes=n_episodes
+    )
+    
     model.eval()
-    all_embeddings = []
-    all_labels = []
-
-    with torch.no_grad():
-        for inputs, labels in data_loader:
-            inputs = inputs.to(device)
-            
-            # Add channel dimension if needed
-            if inputs.dim() == 3:
-                inputs = inputs.unsqueeze(1)
-                
-            embeddings = model(inputs, return_embedding=True)
-            all_embeddings.append(embeddings)
-            all_labels.append(labels)
-
-    return torch.cat(all_embeddings), torch.cat(all_labels).to(device)
-def classify_prototypical(embeddings, labels, query_embedding):
-    """Classify using prototypical network approach."""
-    unique_labels = torch.unique(labels)
-    prototypes = []
-
-    # Calculate prototype (mean) for each label
-    for label in unique_labels:
-        class_embeddings = embeddings[labels == label]
-        prototype = class_embeddings.mean(dim=0)
-        prototypes.append(prototype)
-
-    prototypes = torch.stack(prototypes)
-
-    # Make sure query_embedding has shape [1, embedding_size]
-    if len(query_embedding.shape) > 2:
-        query_embedding = query_embedding.reshape(1, -1)
-
-    # Calculate euclidean distances between query and all prototypes
-    dists = torch.cdist(query_embedding, prototypes)
-
-    # Get the class with minimum distance
-    min_idx = dists.flatten().argmin().item()
-    pred_class = unique_labels[min_idx].item()
-
-    return pred_class
-
-def classify_with_relation(encoder, relation_net, support_embeddings, support_labels, query_embedding, device):
-    """Classify using relation network."""
-    unique_labels = torch.unique(support_labels)
-    prototypes = []
-
-    # Calculate prototype for each class
-    for label in unique_labels:
-        class_embeddings = support_embeddings[support_labels == label]
-        prototype = class_embeddings.mean(dim=0)
-        prototypes.append((prototype, label.item()))
-
-    # Compare query to each prototype
-    max_score = -1
-    predicted_class = None
-
-    for prototype, label in prototypes:
-        score = relation_net(
-            query_embedding,
-            prototype.unsqueeze(0)
-        )
-
-        if score.item() > max_score:
-            max_score = score.item()
-            predicted_class = label
-
-    return predicted_class, max_score
-
-def classify_with_ensemble(encoder, relation_net, support_embeddings, support_labels, query_embedding, 
-                          proto_weight, rel_weight, device):
-    """Classify using weighted ensemble of prototypical and relation networks."""
-    unique_labels = torch.unique(support_labels)
-    prototypes = []
-
-    # Calculate prototype for each class
-    for label in unique_labels:
-        class_embeddings = support_embeddings[support_labels == label]
-        prototype = class_embeddings.mean(dim=0)
-        prototypes.append((prototype, label.item()))
-    
-    # Stack prototypes for prototypical network
-    proto_stack = torch.stack([p[0] for p in prototypes])
-    
-    # Prototypical network prediction
-    dists = torch.cdist(query_embedding, proto_stack)
-    proto_logits = -dists
-    proto_probs = F.softmax(proto_logits, dim=1)
-    
-    # Relation network prediction
-    rel_scores = torch.zeros(1, len(prototypes), device=device)
-    for i, (prototype, _) in enumerate(prototypes):
-        score = relation_net(query_embedding, prototype.unsqueeze(0))
-        rel_scores[0, i] = score
-    
-    # Normalize relation scores
-    rel_probs = rel_scores / rel_scores.sum(dim=1, keepdim=True)
-    
-    # Combine predictions
-    ensemble_probs = proto_weight * proto_probs + rel_weight * rel_probs
-    
-    # Get predicted class
-    _, pred_idx = ensemble_probs.max(1)
-    pred_class = unique_labels[pred_idx.item()].item()
-    confidence = ensemble_probs[0, pred_idx.item()].item()
-    
-    return pred_class, confidence
-
-def evaluate_model(encoder, relation_net, test_dataloader, device, proto_accuracy=0.5, rel_accuracy=0.5, verbose=True):
-    """Evaluate the model on test data using accuracy-based ensemble."""
-    encoder.eval()
-    relation_net.eval()
-
-    # Get support embeddings and labels
-    support_embeddings, support_labels = get_embeddings(encoder, test_dataloader, device)
-
     correct = 0
     total = 0
-
-    # Calculate weights based on training accuracy
-    proto_weight = proto_accuracy / (proto_accuracy + rel_accuracy) if (proto_accuracy + rel_accuracy) > 0 else 0.5
-    rel_weight = rel_accuracy / (proto_accuracy + rel_accuracy) if (proto_accuracy + rel_accuracy) > 0 else 0.5
-
-    if verbose:
-        print(f"Using weighted ensemble: Prototypical weight = {proto_weight:.2f}, Relation weight = {rel_weight:.2f}")
-    
-    results = []
+    all_results = []
     
     with torch.no_grad():
-        for inputs, labels in test_dataloader:
-            inputs = inputs.to(device)
-            # Add channel dimension if needed
-            if inputs.dim() == 3:
-                inputs = inputs.unsqueeze(1)
+        for support_set, query_set in tqdm(episodic_loader, desc="Evaluating"):
+            # Unpack support and query sets
+            support_data, support_labels = support_set
+            query_data, query_labels = query_set
             
-            labels = labels.to(device)
-            batch_size = inputs.size(0)
+            # Move to device
+            support_data = support_data.to(device)
+            support_labels = support_labels.to(device)
+            query_data = query_data.to(device)
+            query_labels = query_labels.to(device)
+            
+            # Get indices from the sampler to access original file paths
+            query_indices = []
+            episode_indices = list(episodic_loader.sampler._current_indices) if hasattr(episodic_loader.sampler, '_current_indices') else []
+            if episode_indices:
+                support_size = n_way * n_support
+                query_indices = episode_indices[support_size:]
+            
+            episode_classes = []
+            for i in range(n_way):
+                class_indices = torch.where(support_labels % n_way == i)[0]
+                if class_indices.size(0) > 0:
+                    actual_class = support_labels[class_indices[0]].item()
+                    episode_classes.append(actual_class)
+            
+            # Add channel dimension if needed
+            if support_data.dim() == 3:
+                support_data = support_data.unsqueeze(1)
+            if query_data.dim() == 3:
+                query_data = query_data.unsqueeze(1)
+            
+            # Get encodings
+            support_embeddings = model.encoder(support_data, return_embedding=True)
+            query_embeddings = model.encoder(query_data, return_embedding=True)
+            
+            # Compute prototypes for each class
+            prototypes = []
+            for i in range(n_way):
+                class_indices = torch.where(support_labels % n_way == i)[0]
+                class_prototypes = support_embeddings[class_indices].mean(0)
+                prototypes.append(class_prototypes)
+            prototypes = torch.stack(prototypes)
+            
+            # Evaluate each query sample
+            for i, query_embedding in enumerate(query_embeddings):
+                true_label = query_labels[i] % n_way
+                
+                # Get file path for this query sample if available
+                file_path = None
+                if i < len(query_indices) and query_indices[i] < len(test_dataset.data):
+                    file_path = test_dataset.data.iloc[query_indices[i]]['file_path']
 
-            # Get embeddings
-            query_embeddings = encoder(inputs, return_embedding=True)
-
-            # Classify each query
-            for i in range(batch_size):
-                query_emb = query_embeddings[i].unsqueeze(0)
-                true_label = labels[i].item()
-
-                # Prototypical classification
-                proto_pred = classify_prototypical(support_embeddings, support_labels, query_emb)
-
-                # Relation classification
-                rel_pred, rel_score = classify_with_relation(
-                    encoder, relation_net, support_embeddings, support_labels, query_emb, device
-                )
-
-                # Weighted decision
-                if proto_weight > rel_weight and proto_weight > 0.6:
-                    pred = proto_pred
-                    confidence = f"Using prototypical (weight={proto_weight:.2f})"
-                elif rel_weight > proto_weight and rel_weight > 0.6:
-                    pred = rel_pred
-                    confidence = f"Using relation (weight={rel_weight:.2f}, score={rel_score:.2f})"
-                else:
-                    # Use ensemble for close weights
-                    pred, conf = classify_with_ensemble(
-                        encoder, relation_net, support_embeddings, support_labels, 
-                        query_emb, proto_weight, rel_weight, device
-                    )
-                    confidence = f"Using ensemble (confidence={conf:.2f})"
-
-                if pred == true_label:
-                    correct += 1
+                # Prototypical prediction
+                dists = torch.cdist(query_embedding.unsqueeze(0), prototypes)
+                proto_logits = -dists.squeeze(0)
+                proto_probs = F.softmax(proto_logits, dim=0)
+                proto_pred = torch.argmax(proto_probs).item()
+                
+                # Relation network prediction
+                rel_scores = torch.zeros(n_way, device=device)
+                for j in range(n_way):
+                    # Create pair of query embedding and prototype
+                    relation_pair = torch.cat([
+                        query_embedding.unsqueeze(0), 
+                        prototypes[j].unsqueeze(0)
+                    ], dim=1)
+                    rel_scores[j] = model.relation_net(relation_pair)
+                
+                rel_pred = torch.argmax(rel_scores).item()
+                
+                combined_probs = PROTO_WEIGHT * proto_probs + RELATION_WEIGHT * F.softmax(rel_scores, dim=0)
+                pred_class = torch.argmax(combined_probs).item()
+                pred_actual_class = episode_classes[pred_class] if pred_class < len(episode_classes) else -1
+                confidence = combined_probs[pred_class].item()
+                
+                # Track results
+                correct += (pred_class == true_label.item())
                 total += 1
                 
                 result = {
-                    "sample_idx": total,
-                    "true_label": true_label,
-                    "prediction": pred,
-                    "correct": pred == true_label,
-                    "proto_pred": proto_pred, 
-                    "rel_pred": rel_pred,
-                    "rel_score": rel_score,
-                    "decision": confidence
+                    'file_path': file_path,
+                    'true_label': true_label.item(),
+                    'prediction': pred_class,
+                    'actual_prediction': pred_actual_class,  # Actual class label
+                    'proto_pred': proto_pred,
+                    'rel_pred': rel_pred,
+                    'confidence': confidence,
+                    'correct': (pred_class == true_label.item())
                 }
-                results.append(result)
-                
-                if verbose:
-                    print(f"Prediction {total}: {pred} (true: {true_label}) - {confidence}")
-
-    accuracy = correct / total * 100
-    if verbose:
-        print(f"Test Accuracy: {accuracy:.2f}%")
+                all_results.append(result)
     
-    return accuracy, results
-def update_metadata_results(results, test_dataset=None):
+    accuracy = correct / total * 100 if total > 0 else 0
+    return accuracy, all_results
+
+
+def update_metadata_results(
+    results: List[Dict], 
+    test_dataset=None,
+    metadata_path: Optional[str] = None
+) -> pd.DataFrame:
     """
-    Adds results from evaluation to metadata.csv
+    Updates prediction results in metadata CSV file using string labels.
     
     Args:
-        results: List of dictionaries containing evaluation results
-        test_dataset: The test dataset that was used for evaluation
+        results: List of dictionaries containing evaluation results with file_path
+        test_dataset: Optional dataset (not required if results contain file paths)
+        metadata_path: Path to the main metadata CSV file
+    
+    Returns:
+        Updated metadata DataFrame
     """
-    import os
-    import pandas as pd
-    from config import METADATA_PATH
+    # Use default path if not provided
+    metadata_path = metadata_path or METADATA_PATH
     
-    # Ensure the directory for metadata exists
-    os.makedirs(os.path.dirname(METADATA_PATH), exist_ok=True)
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
     
-    # Load existing metadata
-    try:
-        metadata_df = pd.read_csv(METADATA_PATH)
-        
-        # Ensure DataFrame has required columns
-        required_columns = ['file_path', 'label', 'spectrogram_path', 'duration', 
-                            'noise_type', 'overlapping_calls', 'prediction_confidence', 'prediction_correct']
-        for col in required_columns:
-            if col not in metadata_df.columns:
-                print(f"Adding missing column: {col}")
-                metadata_df[col] = None
-    except Exception as e:
-        print(f"Error reading metadata file: {e}")
-        metadata_df = pd.DataFrame(columns=['file_path', 'label', 'spectrogram_path', 'duration', 
-                                           'noise_type', 'overlapping_calls', 'prediction_confidence', 'prediction_correct'])
+    # Read metadata file
+    metadata_df = pd.read_csv(metadata_path)
     
-    # Get the file paths from the test dataset
-    test_files = []
-    
-    if test_dataset is not None and hasattr(test_dataset, 'metadata'):
-        # If we have access to the original metadata in the dataset
-        test_files = test_dataset.metadata['file_path'].tolist()
-        print(f"Found {len(test_files)} files in test dataset")
-    else:
-        # Fallback: get all test files from metadata
-        test_files = metadata_df[metadata_df['file_path'].str.contains('test/', na=False)]['file_path'].tolist()
-        print(f"Using {len(test_files)} test files from metadata (may not match evaluation order)")
-    
-    # Make sure we have the right number of results
-    if len(results) != len(test_files):
-        print(f"Warning: Number of results ({len(results)}) doesn't match number of test files ({len(test_files)})")
-        print("This may lead to incorrect mapping of results to files")
-        
-        # If we have more test files than results, truncate the list
-        if len(test_files) > len(results):
-            test_files = test_files[:len(results)]
-        # If we have more results than test files, we'll only use the first len(test_files) results
+    # Create reverse mapping from numeric to string labels
+    REVERSE_LABEL_MAP = {v: k for k, v in LABEL_MAP.items()}
     
     # Update metadata with results
     updated_count = 0
-    for i, result in enumerate(results):
-        if i < len(test_files):
-            file_path = test_files[i]
-            
-            # Update prediction confidence and correctness
-            confidence = result.get("decision", "none")
-            correct = result.get("correct", "none")
-            
-            # Find the row in the original metadata and update it
-            idx = metadata_df[metadata_df['file_path'] == file_path].index
-            if not idx.empty:
-                metadata_df.loc[idx, 'prediction_confidence'] = confidence
-                metadata_df.loc[idx, 'prediction_correct'] = correct
-                updated_count += 1
-            else:
-                print(f"Warning: File {file_path} not found in metadata")
     
-    # Save updated metadata
-    metadata_df.to_csv(METADATA_PATH, index=False)
+    for result in results:
+        # Get the file path directly from the result
+        file_path = result.get("file_path")
+        if not file_path:
+            print("Warning: Result is missing file_path")
+            continue
+        
+        # Get prediction data
+        confidence = result.get("confidence", 0.0)
+        correct = result.get("correct", False)
+        
+        # Get the numeric prediction
+        prediction_num = result.get("actual_prediction", -1)
+        
+        # Map numeric prediction to string label using the reverse mapping
+        prediction_str = REVERSE_LABEL_MAP.get(prediction_num, "unknown")
+
+        
+        # Update metadata DataFrame
+        metadata_mask = (metadata_df['file_path'] == file_path)
+        if metadata_mask.any():
+            metadata_df.loc[metadata_mask, 'prediction_confidence'] = confidence
+            metadata_df.loc[metadata_mask, 'prediction_correct'] = correct
+            metadata_df.loc[metadata_mask, 'prediction'] = prediction_str  # Store string label
+            updated_count += 1
+        else:
+            print(f"Warning: File {file_path} not found in metadata CSV")
     
-    print(f"Updated prediction results for {updated_count} test files in metadata.")
+    # Save updated CSV
+    metadata_df.to_csv(metadata_path, index=False)
+    
+    print(f"Updated prediction results")    
     return metadata_df

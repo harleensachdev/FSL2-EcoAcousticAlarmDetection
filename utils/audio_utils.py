@@ -6,6 +6,8 @@ import librosa
 import numpy as np
 import pandas as pd
 from config import SAMPLE_RATE, NUM_SAMPLES, SPECTROGRAM_DIR
+from typing import Optional, Tuple
+import scipy.signal
 
 def load_audio(file_path):
     """Load an audio file with proper resampling."""
@@ -26,71 +28,36 @@ def load_audio(file_path):
         print(f"Error loading audio file {file_path}: {e}")
         return None, None
 
-def pad_or_trim(signal, target_length=NUM_SAMPLES):
-    """Pad or trim an audio signal to target length."""
+def pad_or_trim(signal: torch.Tensor, target_length: int = NUM_SAMPLES) -> torch.Tensor:
+    """
+    Simple function to pad or trim an audio signal to a target length.
+    
+    Args:
+        signal (torch.Tensor): Input audio signal
+        target_length (int): Desired signal length (defaults to NUM_SAMPLES from config)
+        
+    Returns:
+        torch.Tensor: Padded or trimmed audio signal
+    """
     if signal is None:
         return None
         
+    # Get the length of the signal
     length = signal.shape[1]
     
-    # Trim if longer than target length
-    if length > target_length:
-        signal = signal[:, :target_length]
-    
-    # Pad if shorter than target length    
-    elif length < target_length:
+    # Pad if too short
+    if length < target_length:
         padding = target_length - length
-        signal = torch.nn.functional.pad(signal, (0, padding))
-        
-    return signal
-
-def detect_noise_type(file_path, threshold=0.7):
-    """Simplified noise type detection (placeholder for more sophisticated analysis)."""
-    signal, sr = load_audio(file_path)
-    if signal is None:
-        return "unknown"
-        
-    # Simple analysis for demonstration - in practice use more sophisticated methods
-    signal = signal.numpy().flatten()
+        return torch.nn.functional.pad(signal, (0, padding))
     
-    # Check RMS energy
-    rms = np.sqrt(np.mean(signal**2))
+    # Trim if too long (take the middle segment)
+    elif length > target_length:
+        start = (length - target_length) // 2
+        return signal[:, start:start + target_length]
     
-    # Check zero-crossing rate
-    zero_crossings = np.sum(np.abs(np.diff(np.signbit(signal).astype(int))))
-    zcr = zero_crossings / len(signal)
-    
-    if rms > threshold and zcr < 0.05:
-        return "rain"
-    elif zcr > 0.1:
-        return "wind"
-    elif np.max(signal) > 0.9:
-        return "anthropogenic"
+    # Return as-is if exactly the right length
     else:
-        return "none"
-        
-def detect_overlapping_calls(file_path):
-    """Simplified detection of overlapping bird calls (placeholder)."""
-    # In practice, this would use more sophisticated techniques 
-    # such as multiple source separation or onset detection
-    
-    signal, sr = load_audio(file_path)
-    if signal is None:
-        return "none"
-        
-    # Simple analysis for demonstration
-    signal = signal.numpy().flatten()
-    
-    # Spectral flatness as a rough proxy for complexity
-    spec = np.abs(librosa.stft(signal))
-    flatness = librosa.feature.spectral_flatness(S=spec)
-    
-    if np.mean(flatness) > 0.3:
-        return "high"
-    elif np.mean(flatness) > 0.15:
-        return "medium"
-    else:
-        return "low"
+        return signal
 
 def generate_spectrogram_path(audio_path):
     """Generate the corresponding spectrogram path for an audio file."""

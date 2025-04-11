@@ -1,11 +1,11 @@
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config import EMBEDDING_DIM
-
-#models.py
+from config import (EMBEDDING_DIM, N_WAY, N_SUPPORT, 
+                   PROTO_WEIGHT, RELATION_WEIGHT)
 class CNNEncoder(nn.Module):
-    def __init__(self, n_classes=3):
+    def __init__(self, n_classes=N_WAY):
         super().__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),
@@ -41,9 +41,17 @@ class CNNEncoder(nn.Module):
         self.fc2 = nn.Linear(EMBEDDING_DIM, n_classes)  # Classification layer
         self.log_softmax = nn.LogSoftmax(dim=1)
     
-    def forward(self, input_data, return_embedding=False):
-        # Handle 5D input tensor (likely from a support/query set)
-        if input_data.dim() == 5:
+    def forward(self, input_data, return_embedding = True):
+        # Handle multiple possible input tensor shapes
+        
+        # If input is 6D, try to reshape
+        if input_data.dim() == 6:
+            # Reshape from [batch, k_shot, 1, 1, height, width] to [batch * k_shot, 1, height, width]
+            batch_size, k_shot, channels, _, height, width = input_data.shape
+            input_data = input_data.view(batch_size * k_shot, channels, height, width)
+        
+        # Handle 5D input tensor 
+        elif input_data.dim() == 5:
             # Reshape from [batch, n_samples, channels, height, width] to [batch * n_samples, channels, height, width]
             batch_size, n_samples, channels, height, width = input_data.shape
             input_data = input_data.view(batch_size * n_samples, channels, height, width)
@@ -61,6 +69,10 @@ class CNNEncoder(nn.Module):
             else:
                 # It's likely [batch, n_mels, time], add channel dim to each
                 input_data = input_data.unsqueeze(1)
+        
+        # Ensure input is 4D [batch, channels, height, width]
+        if input_data.dim() != 4:
+            raise ValueError(f"Unexpected input tensor shape: {input_data.shape}")
         
         x = self.conv1(input_data)
         x = self.conv2(x)
@@ -81,7 +93,6 @@ class CNNEncoder(nn.Module):
         logits = self.fc2(x)
         return self.log_softmax(logits)
 
-
 class RelationNetwork(nn.Module):
     def __init__(self, embedding_dim=EMBEDDING_DIM):
         super().__init__()
@@ -100,15 +111,21 @@ class RelationNetwork(nn.Module):
             nn.Sigmoid()  # Output similarity score between 0 and 1
         )
     
-    def forward(self, embedding1, embedding2):
-        # Ensure both embeddings have the same shape
-        if embedding1.dim() == 1:
-            embedding1 = embedding1.unsqueeze(0)
-        if embedding2.dim() == 1:
-            embedding2 = embedding2.unsqueeze(0)
-        
-        # Concatenate the two embeddings
-        combined = torch.cat([embedding1, embedding2], dim=1)
+    def forward(self,x):
+        # seperate/ preconcatenated
+        if isinstance(x, tuple) or isinstance(x,list):
+            embedding1, embedding2 = x
+                
+            # Ensure both embeddings have the same shape
+            if embedding1.dim() == 1:
+                embedding1 = embedding1.unsqueeze(0)
+            if embedding2.dim() == 1:
+                embedding2 = embedding2.unsqueeze(0)
+            
+            # Concatenate the two embeddings
+            combined = torch.cat([embedding1, embedding2], dim=1)
+        else:
+            combined = x
         
         # Pass through relation module to get similarity score
         return self.relation_module(combined)
@@ -170,16 +187,15 @@ class PrototypicalNet(nn.Module):
         return predicted_labels
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 class EnsembleModel(nn.Module):
-    def __init__(self, proto_net, relation_net):
+    def __init__(self, encoder, relation_net = None):
         super().__init__()
-        self.proto_net = proto_net
-        self.relation_net = relation_net
-        self.encoder = proto_net.encoder  # Both networks share the same encoder
+        self.encoder = encoder
+        self.proto_net = PrototypicalNet(encoder)
+        if relation_net is None:
+            self.relation_net = RelationNetwork(EMBEDDING_DIM)
+        else:
+            self.relation_net = relation_net
     
     def forward(self, x):
         """
@@ -195,13 +211,13 @@ class EnsembleModel(nn.Module):
         return self.encoder(x)
     
     def few_shot_classify(self, support_images, support_labels, query_images, 
-                           n_way=2, n_support=2, 
-                           proto_weight=0.5, relation_weight=0.5):
+                       n_way=N_WAY, n_support=N_SUPPORT,
+                       proto_weight=PROTO_WEIGHT, relation_weight=RELATION_WEIGHT):
         """
         Few-shot classification method that matches the previous implementation
         
         Parameters:
-            support_images: [n_way*n_support, C, H, W] support images
+            support_images: [n_way*n_support, C, H, W] support 
             support_labels: [n_way*n_support] support labels
             query_images: [n_query, C, H, W] query images
             n_way: number of classes
@@ -212,9 +228,8 @@ class EnsembleModel(nn.Module):
         Returns:
             predicted_labels: [n_query] predicted class indices for each query
         """
-        ensemble_probs = self.proto_net.forward(support_images, support_labels, 
-                                                query_images, n_way, n_support)
-        proto_probs = torch.exp(ensemble_probs)
+        proto_log_probs = self.proto_net.forward(support_images, support_labels, query_images, n_way,n_support)
+        proto_probs = torch.exp(proto_log_probs)
         
         # Extract embeddings for relation network
         support_embeddings = self.encoder(support_images, return_embedding=True)
