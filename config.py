@@ -2,10 +2,12 @@ import torch
 import os
 from datetime import datetime
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-AUDIO_DIR = os.path.join(DATA_DIR, "audio_files")
-SPECTROGRAM_DIR = os.path.join(DATA_DIR, "spectrograms")
-METADATA_PATH = os.path.join(DATA_DIR, "metadata.csv")
+DATA_DIR = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data"
+AUDIO_DIR = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data/audio_files"
+SPECTROGRAM_DIR = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data/spectrograms"
+METADATA_PATH = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data/FS2-metadata.csv"
+
+TEMPERATURE=10.0
 
 # Audio processing
 SAMPLE_RATE = 22050

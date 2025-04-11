@@ -32,7 +32,7 @@ from src.preprocess import (
 )
 
 from src.dataset import BirdSoundDataset
-from src.models import CNNEncoder, RelationNetwork, EnsembleModel
+from src.models import CombinedFreqTemporalCNNEncoder, RelationNetwork, EnsembleModel
 from src.training import train_few_shot
 from src.evaluation import evaluate_episodic, update_metadata_results
 
@@ -83,7 +83,7 @@ def main():
         
         try:
             # Step 5: Initialize models
-            encoder = CNNEncoder().to(DEVICE)
+            encoder = CombinedFreqTemporalCNNEncoder().to(DEVICE)
             relation_net = RelationNetwork().to(DEVICE)
             ensemble_model = EnsembleModel(encoder, relation_net).to(DEVICE)
             
