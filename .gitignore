@@ -1,0 +1,12 @@
+# Ignore virtual environments
+alarm-detection-env/
+
+# Ignore large data files
+data/
+*.wav
+*.pt
+
+# Python-specific ignores
+__pycache__/
+*.pyc
+.DS_Store
