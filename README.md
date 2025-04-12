@@ -4,13 +4,6 @@ FSL2-EcoAcousticAlarmDetection is a few-shot learning model designed to classify
 
 This hybrid approach achieves a classification accuracy of 97% on a 30-sample test set.
 
-Differences from FSL1:
--> Class prototypes from the support set is compared to query embeddings using COSINE distance with temperature scaling (10.0), instead of EUCALIDEAN distance
--> Mantains temporal structure by pooling layer that compresses frequency dimension into 4 representative bins, preserving time, instead of pooling over both frequency and time and flattening into a single vector
--> Simple attention mechanism - comprised of single linear layer with Tanh activation to assign importance to each time step and filter out less useful frames
+Compared to FSL1, this model uses cosine distance with constant temperature scaling (10.0) rather than Euclidean distance to compare query embeddings with class prototypes. It maintains temporal structure by applying a pooling layer that compresses the frequency dimension into four representative bins while preserving the time axis—unlike FSL1, which flattens both dimensions. It also incorporates a simplified attention mechanism with four attention comprised of single linear layer with Tanh activation to assign importance to each time step and filter out less useful frames.
 
-Differences from FS3:
--> Simplified attention mechanism - only one linear Tanh layer, compared to multihead temporal attention (see fs3)
--> Utilizes ensemble approach (prototypical + relation weighted predictions), not just prototypical network
--> Normalization is not learnable
--> Uses constant temperature scaling instead of temperature decay
+Compared to FSL3, this model replaces the multi-head attention module comprising of four attention heads with a simplified attention mechanism — which uses a single linear layer with Tanh activation. It excludes learnable normalization, but includes relation-based predictions and uses a fixed temperature value (10.0), instead of linear decay.
