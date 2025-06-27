@@ -2,12 +2,13 @@ import torch
 import os
 from datetime import datetime
 
-DATA_DIR = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data"
-AUDIO_DIR = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data/audio_files"
-SPECTROGRAM_DIR = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data/spectrograms"
-METADATA_PATH = "/Users/caramelloveschicken/Library/Mobile Documents/com~apple~CloudDocs/researchprojects/alarm-call-detection/data/FS2-metadata.csv"
 
-TEMPERATURE=10.0
+DATA_DIR = "/Users/caramelloveschicken/Desktop/data"
+AUDIO_DIR = "/Users/caramelloveschicken/Desktop/data/training/audio_files"
+SPECTROGRAM_DIR = "/Users/caramelloveschicken/Desktop/data/training/spectrograms"
+METADATA_PATH = "/Users/caramelloveschicken/Desktop/data/training/results/FS2-metadata.csv"
+EVALUATEDATAPATH = "/Users/caramelloveschicken/Desktop/data/Botanical Garden/Small-BG2/Small-BG2-Results/small-bg2-fs2-results.csv"
+EVALUATEAUDIO_DIR  = "/Users/caramelloveschicken/Desktop/data/Botanical Garden/Small-BG2/Small-BG2-data"
 
 # Audio processing
 SAMPLE_RATE = 22050
@@ -24,7 +25,7 @@ LEARNING_RATE = 0.001
 N_WAY = 3  # Number of classes per episode
 N_SUPPORT = 5 # Number of support samples per class
 N_QUERY = 6 # Number of query samples per class
-
+TEMPERATURE = 10.0
 # Label mapping
 LABEL_MAP = {
     "alarm": 0,

@@ -1,7 +1,9 @@
+# dataset.py 
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
 import random
 from typing import List, Optional
+import os
 
 from config import (LABEL_MAP
 )
@@ -170,3 +172,39 @@ class EpisodicDataLoader:
 
     def __len__(self):
         return len(self.sampler)
+
+class SegmentDataset(Dataset):
+    """Dataset class for 1-second audio segments"""
+
+    def __init__(self, metadata_df):
+        """Initialize dataset from metadata"""
+        self.data = metadata_df
+        self.spectrograms = []
+        self.file_paths = []
+
+        print("Loading segment spectrograms...")
+
+        for idx, row in self.data.iterrows():
+            try:
+                file_path = row['file_path']
+                # check if this is a valid spectrogram path
+                if os.path.exists(file_path) and file_path.endswith('.pt'):
+                    spectrogram = torch.load(file_path)
+                    self.spectrograms.append(spectrogram)
+                    self.file_paths.append(file_path)
+            except Exception as e:
+                print(f"Error loading spectrogram {file_path}: {e}")
+
+    def __len__(self):
+        return len(self.spectrograms)
+    
+    def __getitem__(self, idx):
+        spectrogram = self.spectrograms[idx]
+        # Return just the spectrogram since we have no labels during evaluation
+        return spectrogram, 0  # Use 0 as dummy label
+    
+    def get_file_path(self, idx):
+        """Get file path for given idx"""
+        if idx < len(self.file_paths):
+            return self.file_paths[idx]
+        return None
