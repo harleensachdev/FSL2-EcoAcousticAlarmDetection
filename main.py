@@ -46,12 +46,16 @@ from src.dataset import BirdSoundDataset, SegmentDataset, EpisodicDataLoader
 from src.models import CombinedFreqTemporalCNNEncoder, RelationNetwork, EnsembleModel
 from src.training import train_few_shot
 from src.evaluation import (
-    evaluate_episodic, 
+    filter_unprocessed_segments, 
+    update_segment_class_counts,
     update_metadata_results,
     evaluate_ensemble_classification,
     update_segment_class_counts_with_time_aggregation,
     create_time_aggregated_summary
 )
+
+# Configuration flag for time aggregation
+ENABLE_TIME_AGGREGATION = False  # Set to True to enable time aggregation
 
 def preprocess_data():
     """
@@ -76,6 +80,7 @@ def preprocess_data():
 def preprocess_evaluation_data():
     """
     Prepare evaluation data by processing audio files into 1-second segments.
+    Creates new entries for new files instead of overwriting existing data.
     """
     print("Preparing evaluation data...")
     
@@ -92,20 +97,25 @@ def preprocess_evaluation_data():
     
     # For any unprocessed files, process them into segments
     unprocessed_files = experiment_df[experiment_df['processed'] == False]
+    print(f"Found {len(unprocessed_files)} unprocessed files")
+    
     for idx, row in unprocessed_files.iterrows():
         try:
             file_path = row['file_path']
+            print(f"Processing {file_path}...")
             _, segment_paths = process_audio_file(file_path, mel_spectrogram)
             
             if segment_paths:
                 # Update paths in DataFrame
                 experiment_df.at[idx, 'spectrogram_paths'] = ','.join(segment_paths)
                 experiment_df.at[idx, 'processed'] = True
+                print(f"Created {len(segment_paths)} segments for {file_path}")
         except Exception as e:
             print(f"Error processing {file_path}: {e}")
     
     # Save updated DataFrame
     experiment_df.to_csv(EVALUATEDATAPATH, index=False)
+    print(f"Updated evaluation data saved to {EVALUATEDATAPATH}")
     return experiment_df
 
 def main():
@@ -156,12 +166,11 @@ def main():
                 proto_weight=PROTO_WEIGHT
             )
             
-            # Step 7: Prepare evaluation data
+                # Step 7: Prepare evaluation data
             print("Preparing evaluation data...")
             experiment_df = preprocess_evaluation_data()
             
             # Create dataset of all 1-second segments for evaluation
-            # We need to create a flat list of all spectrogram paths
             all_segment_paths = []
             for idx, row in experiment_df.iterrows():
                 if row['processed'] and row['spectrogram_paths']:
@@ -172,12 +181,22 @@ def main():
                 print("No segments found for evaluation!")
                 return
             
-            # Create a DataFrame with just the paths for the segment dataset
-            segments_df = pd.DataFrame({'file_path': all_segment_paths})
+            # FILTER OUT ALREADY PROCESSED SEGMENTS
+            filtered_segment_paths, skipped_count = filter_unprocessed_segments(experiment_df, all_segment_paths)
+            
+            if not filtered_segment_paths:
+                print("All files have already been evaluated! No new segments to process.")
+                print(f"Total segments: {len(all_segment_paths)}, Already processed: {skipped_count}")
+                return
+            
+            print(f"Processing {len(filtered_segment_paths)} new segments (skipping {skipped_count} already processed)")
+            
+            # Create dataset with only unprocessed segments
+            segments_df = pd.DataFrame({'file_path': filtered_segment_paths})
             evaluation_dataset = SegmentDataset(segments_df)
             
-            # Step 8: Evaluate the model on segments using ensemble classification
-            print(f"Evaluating model on {len(evaluation_dataset)} segments...")
+            # Step 8: Evaluate only the new segments
+            print(f"Evaluating model on {len(evaluation_dataset)} NEW segments...")
             results = evaluate_ensemble_classification(
                 model=ensemble_model,
                 segment_dataset=evaluation_dataset,
@@ -186,59 +205,58 @@ def main():
                 n_way=N_WAY,
                 n_support=N_SUPPORT,
                 batch_size=BATCH_SIZE
-            )
+                
+    )
+
+            # Step 9: Update experiment DataFrame with segment class counts
+            print("Updating experiment data...")
+            if ENABLE_TIME_AGGREGATION:
+                print("Using time-based aggregation...")
+                experiment_df = update_segment_class_counts_with_time_aggregation(experiment_df, results)
+                
+                # Create time-aggregated summary
+                summary_df = create_time_aggregated_summary(experiment_df)
+                
+                # Show time-aggregated statistics
+                print(f"\nTime-aggregated statistics:")
+                print(f"Average counts per time period:")
+                for class_col in ['alarm_count_time_avg', 'non_alarm_count_time_avg', 'background_count_time_avg']:
+                    if class_col in summary_df.columns:
+                        avg_count = summary_df[class_col].mean()
+                        print(f"  {class_col.replace('_count_time_avg', '')}: {avg_count:.1f}")
+                
+                # Show examples of time periods with multiple files
+                if 'num_files' in summary_df.columns:
+                    multiple_files = summary_df[summary_df['num_files'] > 1]
+                    if len(multiple_files) > 0:
+                        print(f"\nTime periods with multiple files: {len(multiple_files)}")
+                        print("Examples:")
+                        for _, row in multiple_files.head(3).iterrows():
+                            print(f"  {row['time_key']}: {row['num_files']} files, "
+                                  f"avg counts [{row.get('alarm_count_time_avg', 0)}, "
+                                  f"{row.get('non_alarm_count_time_avg', 0)}, "
+                                  f"{row.get('background_count_time_avg', 0)}]")
+                
+                # Save the time-aggregated results
+                experiment_df.to_csv(EVALUATEDATAPATH, index=False)
+                print(f"Time-aggregated results saved to {EVALUATEDATAPATH}")
+            else:
+                print("Using standard file-based counting (time aggregation disabled)...")
+                experiment_df = update_segment_class_counts(experiment_df, results)
+                
+                # Save the updated results
+                experiment_df.to_csv(EVALUATEDATAPATH, index=False)
+                print(f"File-based results saved to {EVALUATEDATAPATH}")
             
-            # Step 9: Update experiment DataFrame with time-aggregated segment class counts
-            print("Updating experiment data with time-based aggregation...")
-            experiment_df = update_segment_class_counts_with_time_aggregation(experiment_df, results)
-            
-            # Step 10: Create and save ONLY the time-aggregated summary
-            print("Creating time-aggregated summary...")
-            summary_df = create_time_aggregated_summary(experiment_df)
-            
-            # Save ONLY the summary to EVALUATEDATAPATH
-            summary_df.to_csv(EVALUATEDATAPATH, index=False)
-            print(f"Saved time-aggregated summary to {EVALUATEDATAPATH}")
-            
-            # Step 11: Update metadata with prediction results (if needed)
+            # Step 10: Update metadata with prediction results (if needed)
             # Only update if results contain files that are in the main metadata
             metadata_results = [r for r in results if not '_seg' in r.get('file_path', '')]
             if metadata_results:
-                update_metadata_results(metadata_results, evaluation_dataset)
+                # This will handle appending new data instead of overwriting
+                final_df = update_metadata_results(metadata_results, evaluation_dataset)
+                print(f"Final metadata contains {len(final_df)} total entries")
             
             print("Evaluation complete!")
-            
-            # Print summary statistics
-            print(f"\nEvaluation Summary:")
-            print(f"Total segments evaluated: {len(results)}")
-            print(f"Total unique time periods: {len(summary_df)}")
-            
-            # Count predictions by class
-            prediction_counts = {}
-            for result in results:
-                pred = result.get('prediction', 'unknown')
-                prediction_counts[pred] = prediction_counts.get(pred, 0) + 1
-            
-            print(f"\nSegment-level predictions:")
-            for class_name, count in prediction_counts.items():
-                percentage = (count / len(results)) * 100
-                print(f"  {class_name}: {count} segments ({percentage:.1f}%)")
-            
-            # Show time-aggregated statistics
-            print(f"\nTime-aggregated statistics:")
-            print(f"Average counts per time period:")
-            for class_col in ['alarm_count_avg', 'non_alarm_count_avg', 'background_count_avg']:
-                avg_count = summary_df[class_col].mean()
-                print(f"  {class_col.replace('_count_avg', '')}: {avg_count:.1f}")
-            
-            # Show examples of time periods with multiple files
-            multiple_files = summary_df[summary_df['num_files'] > 1]
-            if len(multiple_files) > 0:
-                print(f"\nTime periods with multiple files: {len(multiple_files)}")
-                print("Examples:")
-                for _, row in multiple_files.head(3).iterrows():
-                    print(f"  {row['time_key']}: {row['num_files']} files, "
-                          f"avg counts [{row['alarm_count_avg']}, {row['non_alarm_count_avg']}, {row['background_count_avg']}]")
             
         else:
             print("Not enough data for few-shot learning.")

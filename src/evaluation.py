@@ -12,7 +12,6 @@ from config import N_WAY, N_SUPPORT, N_QUERY, METADATA_PATH, EPISODES, LEARNING_
 from src.dataset import EpisodicDataLoader
 from datetime import datetime
 
-
 def extract_time_from_filename(filename):
     """
     Extract time information from filename.
@@ -198,12 +197,13 @@ def update_segment_class_counts_with_time_aggregation(experiment_df, results):
 def create_time_aggregated_summary(experiment_df):
     """
     Create a summary DataFrame with one row per time period showing aggregated counts.
+    Excludes detailed file information columns.
     
     Args:
         experiment_df: DataFrame with time-aggregated results
         
     Returns:
-        summary_df: DataFrame with one row per time period
+        summary_df: DataFrame with one row per time period (clean summary only)
     """
     # Group by time and get unique values for each time period
     summary_data = []
@@ -214,6 +214,7 @@ def create_time_aggregated_summary(experiment_df):
         # Get the first row as representative (since aggregated values are the same for all files in the time group)
         first_row = time_group.iloc[0]
         
+        # Create clean summary row with only aggregated data
         summary_row = {
             'time_key': time_key,
             'num_files': len(time_group),
@@ -222,15 +223,23 @@ def create_time_aggregated_summary(experiment_df):
             'background_count_avg': first_row['background_count_time_avg'],
             'total_segments_avg': (first_row['alarm_count_time_avg'] + 
                                  first_row['non_alarm_count_time_avg'] + 
-                                 first_row['background_count_time_avg']),
-            'files': ', '.join(time_group['base_filename'].tolist())
+                                 first_row['background_count_time_avg'])
         }
         summary_data.append(summary_row)
     
     summary_df = pd.DataFrame(summary_data)
     summary_df = summary_df.sort_values('time_key')
     
+    # Ensure we only keep the clean summary columns
+    keep_columns = ['time_key', 'num_files', 'alarm_count_avg', 'non_alarm_count_avg', 
+                   'background_count_avg', 'total_segments_avg']
+    
+    # Only keep columns that exist in the DataFrame
+    final_columns = [col for col in keep_columns if col in summary_df.columns]
+    summary_df = summary_df[final_columns]
+    
     return summary_df
+
 
 
 def evaluate_ensemble_classification(model, segment_dataset, support_dataset, device, n_way=3, n_support=5, batch_size=32):
@@ -588,3 +597,60 @@ def update_metadata_results(
         print(f"Error saving metadata: {e}")
     
     return metadata_df
+
+
+def filter_unprocessed_segments(experiment_df, all_segment_paths):
+    """
+    Filter out segments from files that already have prediction counts.
+    
+    Args:
+        experiment_df: DataFrame with experiment files and their counts
+        all_segment_paths: List of all segment file paths
+        
+    Returns:
+        filtered_segment_paths: List of segments that need evaluation
+        already_processed_count: Number of segments skipped
+    """
+    # Identify files that already have predictions (non-zero or non-null counts)
+    processed_files = set()
+    
+    for idx, row in experiment_df.iterrows():
+        # Check if this file already has prediction counts
+        has_predictions = (
+            pd.notna(row.get('alarm_count', None)) and
+            pd.notna(row.get('non_alarm_count', None)) and 
+            pd.notna(row.get('background_count', None)) and
+            (row.get('alarm_count', 0) + row.get('non_alarm_count', 0) + row.get('background_count', 0)) > 0
+        )
+        
+        if has_predictions:
+            # Extract the base filename to match against segments
+            file_path = row['file_path']
+            base_filename = os.path.splitext(os.path.basename(file_path))[0]
+            processed_files.add(base_filename)
+    
+    print(f"Found {len(processed_files)} files that already have predictions")
+    
+    # Filter segment paths to exclude those from already processed files
+    filtered_paths = []
+    skipped_count = 0
+    
+    for segment_path in all_segment_paths:
+        segment_filename = os.path.basename(segment_path)
+        
+        # Extract the original file identifier from segment filename
+        # Example: "SMM05537-BG2_20221105_081000_seg01.pt" -> "SMM05537-BG2_20221105_081000"
+        match = re.search(r'([\w\d]+-[\w\d]+_\d{8}_\d{6})(?:_seg\d+)?\.pt', segment_filename)
+        if match:
+            original_id = match.group(1)
+        else:
+            original_id = segment_filename.split('_seg')[0]
+        
+        if original_id not in processed_files:
+            filtered_paths.append(segment_path)
+        else:
+            skipped_count += 1
+    
+    print(f"Filtered {len(all_segment_paths)} segments down to {len(filtered_paths)} (skipped {skipped_count})")
+    return filtered_paths, skipped_count
+

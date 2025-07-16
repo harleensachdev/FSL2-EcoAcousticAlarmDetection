@@ -7,8 +7,8 @@ DATA_DIR = "/Users/caramelloveschicken/Desktop/data"
 AUDIO_DIR = "/Users/caramelloveschicken/Desktop/data/training/audio_files"
 SPECTROGRAM_DIR = "/Users/caramelloveschicken/Desktop/data/training/spectrograms"
 METADATA_PATH = "/Users/caramelloveschicken/Desktop/data/training/results/FS2-metadata.csv"
-EVALUATEDATAPATH = "/Users/caramelloveschicken/Desktop/data/Botanical Garden/Small-BG2/Small-BG2-Results/small-bg2-fs2-results.csv"
-EVALUATEAUDIO_DIR  = "/Users/caramelloveschicken/Desktop/data/Botanical Garden/Small-BG2/Small-BG2-data"
+EVALUATEDATAPATH = '/Users/caramelloveschicken/Desktop/data/Habitat Park/PH-Results/ph-1-fs2-results.csv'
+EVALUATEAUDIO_DIR  = '/Users/caramelloveschicken/Desktop/data/Habitat Park/PH-Data/chunk_8'
 
 # Audio processing
 SAMPLE_RATE = 22050
